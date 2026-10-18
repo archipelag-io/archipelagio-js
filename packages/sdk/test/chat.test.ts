@@ -32,9 +32,9 @@ function sseResponse(events: unknown[], pieceSize = 7): Response {
 }
 
 function mockFetch(...responses: Response[]) {
-  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const calls: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }> = [];
   const fn = vi.fn(async (url: string, init: RequestInit) => {
-    calls.push({ url, body: JSON.parse(String(init.body)) });
+    calls.push({ url, body: JSON.parse(String(init.body)), headers: init.headers as Record<string, string> });
     const next = responses.shift();
     if (!next) throw new Error('unexpected request');
     return next;
@@ -85,7 +85,7 @@ describe('chatCompletion', () => {
 
 describe('chatCompletionStream', () => {
   it('reassembles events split across network chunks', async () => {
-    mockFetch(
+    const calls = mockFetch(
       sseResponse([
         { object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'Hello, ' }, finish_reason: null }] },
         { object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: 'world' }, finish_reason: 'stop' }] },
@@ -99,6 +99,7 @@ describe('chatCompletionStream', () => {
       text += chunk.choices[0].delta.content || '';
     }
     expect(text).toBe('Hello, world');
+    expect(calls[0].headers.Accept).toBe('text/event-stream, application/json');
   });
 
   it('throws when the Island fails mid-stream', async () => {

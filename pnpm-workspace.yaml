@@ -1,0 +1,6 @@
+packages:
+  - 'packages/*'
+
+# esbuild (used by tsup) fetches its native binary in a postinstall script
+allowBuilds:
+  esbuild: true

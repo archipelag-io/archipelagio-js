@@ -2,8 +2,8 @@
  * useChat hook for chat completions
  */
 
-import { useCallback, useState } from 'react';
-import type { ChatOptions, Usage } from '@archipelag/sdk';
+import { useCallback, useRef, useState } from 'react';
+import type { ChatOptions, ChatMessage as SdkChatMessage, Usage } from '@archipelag/sdk';
 import { useArchipelag } from '../context';
 
 export interface ChatMessage {
@@ -60,6 +60,10 @@ export interface UseChatReturn {
    */
   error: Error | null;
   /**
+   * Stop the answer being generated
+   */
+  stop: () => void;
+  /**
    * Clear all messages
    */
   clear: () => void;
@@ -108,6 +112,8 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
   const [streamingContent, setStreamingContent] = useState('');
   const [error, setError] = useState<Error | null>(null);
 
+  const abortRef = useRef<AbortController | null>(null);
+
   const send = useCallback(
     async (content: string) => {
       if (isLoading) return;
@@ -122,48 +128,66 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
       const userMessage: ChatMessage = { role: 'user', content };
       setMessages((prev) => [...prev, userMessage]);
 
+      // The model sees the whole conversation, not just the new message
+      const history: SdkChatMessage[] = [
+        ...(options.systemPrompt ? [{ role: 'system' as const, content: options.systemPrompt }] : []),
+        ...messages,
+        userMessage,
+      ];
+
+      const controller = new AbortController();
+      abortRef.current = controller;
       let fullContent = '';
+      let usage: Usage = { creditsUsed: 0 };
 
       try {
-        await client.chatStream(content, {
-          onToken: (token) => {
+        for await (const chunk of client.chatCompletionStream(history, {
+          model: options.workload,
+          max_tokens: options.maxTokens,
+          temperature: options.temperature,
+          stream_options: { include_usage: true },
+          signal: controller.signal,
+        })) {
+          if (chunk.usage) {
+            usage = {
+              promptTokens: chunk.usage.prompt_tokens,
+              completionTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+              creditsUsed: 0,
+            };
+          }
+          const token = chunk.choices?.[0]?.delta?.content;
+          if (token) {
             fullContent += token;
             setStreamingContent(fullContent);
             options.onToken?.(token);
-          },
-          onDone: (usage) => {
-            // Add assistant message
-            const assistantMessage: ChatMessage = {
-              role: 'assistant',
-              content: fullContent,
-            };
-            setMessages((prev) => [...prev, assistantMessage]);
-            setStreamingContent('');
-            setIsStreaming(false);
-            options.onFinish?.(fullContent, usage);
-          },
-          onError: (errorMsg) => {
-            const err = new Error(errorMsg);
-            setError(err);
-            options.onError?.(err);
-          },
-        }, {
-          systemPrompt: options.systemPrompt,
-          maxTokens: options.maxTokens,
-          temperature: options.temperature,
-          workload: options.workload,
-        });
+          }
+        }
       } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        setError(error);
-        options.onError?.(error);
+        if (!controller.signal.aborted) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          setError(error);
+          options.onError?.(error);
+        }
       } finally {
+        // Keep whatever arrived, including after stop()
+        if (fullContent) {
+          const assistantMessage: ChatMessage = { role: 'assistant', content: fullContent };
+          setMessages((prev) => [...prev, assistantMessage]);
+          options.onFinish?.(fullContent, usage);
+        }
+        abortRef.current = null;
+        setStreamingContent('');
         setIsLoading(false);
         setIsStreaming(false);
       }
     },
-    [client, isLoading, options]
+    [client, isLoading, messages, options]
   );
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const clear = useCallback(() => {
     setMessages([]);
@@ -178,6 +202,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     isStreaming,
     streamingContent,
     error,
+    stop,
     clear,
     setMessages,
   };

@@ -47,6 +47,54 @@ const image = await client.generateImage('a sunset over mountains');
 console.log(`Generated ${image.width}x${image.height} image`);
 ```
 
+### Chat Completions (OpenAI-compatible)
+
+```typescript
+const completion = await client.chatCompletion(
+  [
+    { role: 'system', content: 'Answer in one sentence.' },
+    { role: 'user', content: 'What is an archipelago?' },
+  ],
+  { model: 'auto', temperature: 0.3 } // any OpenAI parameter
+);
+console.log(completion.choices[0].message.content);
+
+for await (const chunk of client.chatCompletionStream(messages)) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? '');
+}
+```
+
+### Tool Calling and Agents
+
+Describe a tool with a JSON schema and a `run` function. `runAgent` sends the
+conversation, runs the tools the model asks for (concurrently), feeds the
+results back, and returns the final answer.
+
+```typescript
+import type { Tool } from '@archipelag/sdk';
+
+const getWeather: Tool = {
+  name: 'get_weather',
+  description: 'Current weather for a city',
+  parameters: {
+    type: 'object',
+    properties: { city: { type: 'string' } },
+    required: ['city'],
+  },
+  run: async ({ city }) => ({ city, temp: 4, sky: 'rain' }),
+};
+
+const result = await client.runAgent(
+  [{ role: 'user', content: 'Should I bring an umbrella in Oslo?' }],
+  [getWeather],
+  { maxSteps: 6, onStep: (message) => console.log(message.tool_calls ?? message.content) }
+);
+console.log(result.content);   // final answer
+console.log(result.messages);  // full conversation, including tool calls and results
+```
+
+Tool errors are sent to the model as the tool's result, so it can recover.
+
 ### React Usage
 
 ```tsx
@@ -61,7 +109,8 @@ function App() {
 }
 
 function ChatComponent() {
-  const { messages, send, isLoading, streamingContent } = useChat();
+  // The whole conversation is sent each turn; stop() cancels a streaming answer
+  const { messages, send, stop, isLoading, streamingContent } = useChat();
 
   return (
     <div>
@@ -86,15 +135,17 @@ function ChatComponent() {
 
 ## Development
 
+This is a pnpm workspace.
+
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Build all packages
-npm run build
+pnpm build
 
 # Run tests
-npm test
+pnpm test
 ```
 
 ## Contributing

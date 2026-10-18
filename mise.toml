@@ -6,39 +6,39 @@ NODE_ENV = "development"
 
 [tasks.setup]
 description = "Install dependencies"
-run = "npm install"
+run = "pnpm install"
 
 [tasks.build]
 description = "Build all packages"
-run = "npm run build"
+run = "pnpm run build"
 
 [tasks.dev]
 description = "Start development mode"
-run = "npm run build -- --watch"
+run = "pnpm run build -- --watch"
 
 [tasks.test]
 description = "Run tests"
-run = "npm run test"
+run = "pnpm run test"
 
 [tasks.lint]
 description = "Run linter"
-run = "npm run lint"
+run = "pnpm run lint"
 
 [tasks.clean]
 description = "Clean build artifacts"
-run = "npm run clean"
+run = "pnpm run clean"
 
 [tasks."fmt"]
 description = "Format code with Prettier"
-run = "npx prettier --write ."
+run = "pnpm exec prettier --write ."
 
 [tasks."fmt:check"]
 description = "Check code formatting"
-run = "npx prettier --check ."
+run = "pnpm exec prettier --check ."
 
 [tasks.typecheck]
 description = "Run TypeScript type checking"
-run = "npx tsc --noEmit"
+run = "pnpm exec tsc --noEmit"
 
 [tasks.ci]
 description = "Run all CI checks"
@@ -46,4 +46,4 @@ depends = ["lint", "typecheck", "test"]
 
 [tasks.publish]
 description = "Publish packages to npm"
-run = "npm run build && npx turbo run publish"
+run = "pnpm run build && npx turbo run publish"

@@ -243,3 +243,145 @@ export interface BatchOptions {
 export interface BatchProgressCallback {
   (completed: number, failed: number, total: number): void;
 }
+
+// =============================================================================
+// Chat completions (OpenAI-compatible) and tool calling
+// =============================================================================
+
+/**
+ * A tool call the model made (OpenAI shape)
+ */
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    /** JSON-encoded arguments */
+    arguments: string;
+  };
+}
+
+/**
+ * A message in a conversation (OpenAI shape)
+ */
+export interface ChatMessage {
+  role: 'system' | 'developer' | 'user' | 'assistant' | 'tool';
+  content: string | null;
+  /** Assistant turns that call tools */
+  tool_calls?: ToolCall[];
+  /** Tool results: the call this answers */
+  tool_call_id?: string;
+  name?: string;
+  /** A reasoning model's thinking (responses only) */
+  reasoning_content?: string;
+}
+
+/**
+ * An OpenAI tool definition
+ */
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    /** JSON schema for the arguments */
+    parameters?: Record<string, unknown>;
+  };
+}
+
+/**
+ * Parameters for `chatCompletion`. Any other OpenAI parameter is passed
+ * through as-is.
+ */
+export interface ChatCompletionParams {
+  /** Cargo slug, OpenAI alias, or 'auto' (default) */
+  model?: string;
+  tools?: Array<Tool | ToolDefinition>;
+  tool_choice?: 'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } };
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  seed?: number;
+  stop?: string | string[];
+  response_format?: Record<string, unknown>;
+  /** false skips the thinking phase of reasoning models */
+  enable_thinking?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Token counts reported by the chat API
+ */
+export interface CompletionUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/**
+ * A chat completion (OpenAI shape)
+ */
+export interface ChatCompletion {
+  id: string;
+  object: 'chat.completion';
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: ChatMessage;
+    finish_reason: 'stop' | 'length' | 'tool_calls' | string;
+  }>;
+  usage?: CompletionUsage;
+}
+
+/**
+ * One streamed chunk (OpenAI shape). The last chunk may carry only `usage`.
+ */
+export interface ChatCompletionChunk {
+  id?: string;
+  object: 'chat.completion.chunk';
+  created?: number;
+  model?: string;
+  choices: Array<{
+    index: number;
+    delta: Partial<ChatMessage> & { tool_calls?: Array<Partial<ToolCall> & { index: number }> };
+    finish_reason: string | null;
+  }>;
+  usage?: CompletionUsage;
+}
+
+/**
+ * A tool the model can call, implemented in your code
+ */
+export interface Tool {
+  name: string;
+  description?: string;
+  /** JSON schema for the arguments */
+  parameters?: Record<string, unknown>;
+  /** Runs the tool; the return value is sent to the model (as JSON unless a string) */
+  run: (args: Record<string, unknown>) => unknown | Promise<unknown>;
+}
+
+/**
+ * Options for `runAgent`
+ */
+export interface AgentOptions extends Omit<ChatCompletionParams, 'tools'> {
+  /** Most tool rounds before giving up (default 6) */
+  maxSteps?: number;
+  /** Called with each assistant message as it arrives */
+  onStep?: (message: ChatMessage) => void;
+}
+
+/**
+ * Outcome of `runAgent`
+ */
+export interface AgentResult {
+  /** The model's final answer */
+  content: string;
+  /** The whole conversation, including tool calls and results */
+  messages: ChatMessage[];
+  /** How many tool rounds ran */
+  steps: number;
+  finishReason?: string;
+  usage: CompletionUsage;
+}

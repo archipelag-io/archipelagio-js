@@ -1,6 +1,7 @@
 {
   "name": "archipelag-monorepo",
   "private": true,
+  "packageManager": "pnpm@12.4.2",
   "workspaces": [
     "packages/*"
   ],

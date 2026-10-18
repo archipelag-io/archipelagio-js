@@ -7,9 +7,9 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
   "files": [
@@ -38,7 +38,6 @@
   },
   "homepage": "https://docs.archipelag.io/sdk/javascript",
   "dependencies": {
-    "eventsource-parser": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -2,7 +2,6 @@
  * Archipelag.io SDK Client
  */
 
-import { createParser, type ParsedEvent } from 'eventsource-parser';
 import {
   ArchipelagError,
   AuthenticationError,
@@ -14,6 +13,16 @@ import {
 } from './errors';
 import type {
   Account,
+  AgentOptions,
+  AgentResult,
+  ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionParams,
+  ChatMessage,
+  CompletionUsage,
+  Tool,
+  ToolCall,
+  ToolDefinition,
   ApiKey,
   BatchJob,
   BatchOptions,
@@ -32,8 +41,92 @@ import type {
   Workload,
 } from './types';
 
-const DEFAULT_BASE_URL = 'https://api.archipelag.io';
+const DEFAULT_BASE_URL = 'https://app.archipelag.io';
 const DEFAULT_TIMEOUT = 60000;
+// Chat completions wait for an Island to generate the whole answer
+const CHAT_TIMEOUT = 180000;
+const DEFAULT_MAX_STEPS = 6;
+
+/** Split a fetch body into SSE `data:` payloads, across chunk boundaries */
+async function* sseData(response: Response): AsyncGenerator<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new ArchipelagError('No response body');
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary !== -1) {
+        const event = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = event
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).replace(/^ /, ''))
+          .join('\n');
+        if (data) yield data;
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function toDefinition(tool: Tool | ToolDefinition): ToolDefinition {
+  if ('type' in tool && tool.type === 'function') return tool;
+  const t = tool as Tool;
+  return {
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  };
+}
+
+function chatPayload(
+  messages: ChatMessage[],
+  params: ChatCompletionParams
+): Record<string, unknown> {
+  const { tools, model, ...rest } = params;
+  const payload: Record<string, unknown> = { model: model || 'auto', messages };
+  for (const [key, value] of Object.entries(rest)) {
+    if (value !== undefined) payload[key] = value;
+  }
+  if (tools && tools.length > 0) payload.tools = tools.map(toDefinition);
+  return payload;
+}
+
+async function runToolCall(tools: Map<string, Tool>, call: ToolCall): Promise<ChatMessage> {
+  const name = call.function?.name;
+  const message = (content: string): ChatMessage => ({
+    role: 'tool',
+    tool_call_id: call.id,
+    name,
+    content,
+  });
+  const tool = tools.get(name);
+  if (!tool) return message(`Error: unknown tool '${name}'`);
+  try {
+    const args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
+    const result = await tool.run(args);
+    return message(typeof result === 'string' ? result : JSON.stringify(result));
+  } catch (error) {
+    // The model sees the failure and can recover
+    return message(`Error: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function addUsage(total: CompletionUsage, usage?: CompletionUsage): CompletionUsage {
+  return {
+    prompt_tokens: total.prompt_tokens + (usage?.prompt_tokens || 0),
+    completion_tokens: total.completion_tokens + (usage?.completion_tokens || 0),
+    total_tokens: total.total_tokens + (usage?.total_tokens || 0),
+  };
+}
 
 /**
  * Archipelag.io API Client
@@ -126,6 +219,7 @@ export class Archipelag {
         throw new InsufficientCreditsError(message);
       case 404:
         throw new NotFoundError(message);
+      case 400:
       case 422:
         throw new ValidationError(
           message,
@@ -234,36 +328,8 @@ export class Archipelag {
       await this.handleResponse(response);
     }
 
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new ArchipelagError('No response body');
-    }
-
-    const decoder = new TextDecoder();
-    const parser = createParser((event: ParsedEvent) => {
-      if (event.type === 'event' && event.data) {
-        return JSON.parse(event.data) as StreamEvent;
-      }
-      return null;
-    });
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const events = chunk.split('\n\n').filter(Boolean);
-
-        for (const eventStr of events) {
-          if (eventStr.startsWith('data: ')) {
-            const data = eventStr.slice(6);
-            yield this.parseStreamEvent(data);
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
+    for await (const data of sseData(response)) {
+      yield this.parseStreamEvent(data);
     }
   }
 
@@ -341,22 +407,153 @@ export class Archipelag {
   // ===========================================================================
 
   /**
+   * POST to the chat API, which answers in OpenAI shape (not `{data: ...}`)
+   */
+  private async postChat(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), Math.max(this.timeout, CHAT_TIMEOUT));
+    signal?.addEventListener('abort', () => controller.abort());
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          'Accept': payload.stream ? 'text/event-stream' : 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        await this.handleResponse(response);
+      }
+      return response;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new ArchipelagError(signal?.aborted ? 'Request cancelled' : 'Request timed out');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
+   * Create a chat completion (OpenAI-compatible).
+   *
+   * @example
+   * ```typescript
+   * const completion = await client.chatCompletion(
+   *   [{ role: 'user', content: 'What is an archipelago?' }],
+   *   { model: 'auto', temperature: 0.3 }
+   * );
+   * console.log(completion.choices[0].message.content);
+   * ```
+   */
+  async chatCompletion(
+    messages: ChatMessage[],
+    params: ChatCompletionParams = {}
+  ): Promise<ChatCompletion> {
+    const response = await this.postChat(chatPayload(messages, params));
+    return (await response.json()) as ChatCompletion;
+  }
+
+  /**
+   * Stream a chat completion as OpenAI `chat.completion.chunk` objects.
+   * Throws `JobFailedError` if the Island fails mid-stream.
+   */
+  async *chatCompletionStream(
+    messages: ChatMessage[],
+    params: ChatCompletionParams & { signal?: AbortSignal } = {}
+  ): AsyncGenerator<ChatCompletionChunk> {
+    const { signal, ...rest } = params;
+    const payload = { ...chatPayload(messages, rest), stream: true };
+    const response = await this.postChat(payload, signal);
+
+    for await (const data of sseData(response)) {
+      if (data === '[DONE]') return;
+      const chunk = JSON.parse(data);
+      if (chunk.error) {
+        throw new JobFailedError(chunk.error.message || 'Chat completion failed');
+      }
+      yield chunk as ChatCompletionChunk;
+    }
+  }
+
+  /**
+   * Run a tool-using conversation until the model answers.
+   *
+   * Each round sends the conversation with the tools; when the model asks
+   * for tools, they run in your process (concurrently) and their results go
+   * back to it.
+   *
+   * @example
+   * ```typescript
+   * const result = await client.runAgent(
+   *   [{ role: 'user', content: 'Weather in Oslo?' }],
+   *   [{
+   *     name: 'get_weather',
+   *     description: 'Current weather for a city',
+   *     parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+   *     run: async ({ city }) => ({ city, temp: 4 }),
+   *   }]
+   * );
+   * console.log(result.content);
+   * ```
+   */
+  async runAgent(
+    messages: ChatMessage[],
+    tools: Tool[],
+    options: AgentOptions = {}
+  ): Promise<AgentResult> {
+    const { maxSteps = DEFAULT_MAX_STEPS, onStep, ...params } = options;
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    const conversation = [...messages];
+    let usage: CompletionUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+    for (let step = 0; step <= maxSteps; step++) {
+      const completion = await this.chatCompletion(conversation, { ...params, tools });
+      usage = addUsage(usage, completion.usage);
+      const choice = completion.choices[0];
+      const message = choice.message;
+      conversation.push(message);
+      onStep?.(message);
+
+      const calls = message.tool_calls || [];
+      if (calls.length === 0) {
+        return {
+          content: message.content || '',
+          messages: conversation,
+          steps: step,
+          finishReason: choice.finish_reason,
+          usage,
+        };
+      }
+      if (step === maxSteps) break;
+      conversation.push(...(await Promise.all(calls.map((c) => runToolCall(byName, c)))));
+    }
+
+    throw new ArchipelagError(`Model still calling tools after ${maxSteps} rounds`);
+  }
+
+  /**
    * Send a chat message and get a response
    */
   async chat(prompt: string, options: ChatOptions = {}): Promise<ChatResult> {
-    const input: Record<string, unknown> = { prompt };
-    if (options.systemPrompt) input.system_prompt = options.systemPrompt;
-    if (options.maxTokens) input.max_tokens = options.maxTokens;
-    if (options.temperature !== undefined) input.temperature = options.temperature;
-
-    const job = await this.createJob(options.workload || 'llm-chat', input);
-    const completed = await this.waitForJob(job.id);
+    const completion = await this.chatCompletion(simpleMessages(prompt, options), {
+      model: options.workload,
+      max_tokens: options.maxTokens,
+      temperature: options.temperature,
+    });
+    const choice = completion.choices[0];
 
     return {
-      content: completed.output || '',
-      jobId: completed.id,
-      usage: completed.usage || { creditsUsed: 0 },
-      finishReason: completed.status === 'completed' ? 'stop' : 'error',
+      content: choice.message.content || '',
+      jobId: completion.id,
+      usage: toUsage(completion.usage),
+      model: completion.model,
+      finishReason: choice.finish_reason,
     };
   }
 
@@ -368,32 +565,24 @@ export class Archipelag {
     callbacks: StreamCallbacks,
     options: ChatOptions = {}
   ): Promise<void> {
-    const input: Record<string, unknown> = { prompt };
-    if (options.systemPrompt) input.system_prompt = options.systemPrompt;
-    if (options.maxTokens) input.max_tokens = options.maxTokens;
-    if (options.temperature !== undefined) input.temperature = options.temperature;
-
-    const job = await this.createJob(options.workload || 'llm-chat', input);
-
-    for await (const event of this.streamJob(job.id)) {
-      switch (event.type) {
-        case 'token':
-          callbacks.onToken?.(event.content || '');
-          break;
-        case 'progress':
-          callbacks.onProgress?.(event.step || 0, event.total || 0);
-          break;
-        case 'image':
-          callbacks.onImage?.(event.imageData || '', event.imageFormat || 'png');
-          break;
-        case 'error':
-          callbacks.onError?.(event.error || 'Unknown error');
-          break;
-        case 'done':
-          callbacks.onDone?.(event.usage || { creditsUsed: 0 });
-          break;
+    let usage: CompletionUsage | undefined;
+    try {
+      for await (const chunk of this.chatCompletionStream(simpleMessages(prompt, options), {
+        model: options.workload,
+        max_tokens: options.maxTokens,
+        temperature: options.temperature,
+        stream_options: { include_usage: true },
+      })) {
+        if (chunk.usage) usage = chunk.usage;
+        for (const choice of chunk.choices || []) {
+          if (choice.delta?.content) callbacks.onToken?.(choice.delta.content);
+        }
       }
+    } catch (error) {
+      callbacks.onError?.(error instanceof Error ? error.message : String(error));
+      return;
     }
+    callbacks.onDone?.(toUsage(usage));
   }
 
   /**
@@ -602,4 +791,20 @@ export class Archipelag {
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
+}
+
+function simpleMessages(prompt: string, options: ChatOptions): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  if (options.systemPrompt) messages.push({ role: 'system', content: options.systemPrompt });
+  messages.push({ role: 'user', content: prompt });
+  return messages;
+}
+
+function toUsage(usage?: CompletionUsage): Usage {
+  return {
+    promptTokens: usage?.prompt_tokens,
+    completionTokens: usage?.completion_tokens,
+    totalTokens: usage?.total_tokens,
+    creditsUsed: 0,
+  };
 }

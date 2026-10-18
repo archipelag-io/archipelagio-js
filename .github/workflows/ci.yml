@@ -11,24 +11,30 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        node-version: [20, 22, 24]
 
     steps:
       - uses: actions/checkout@v4
+
+      # Version comes from packageManager in package.json
+      - uses: pnpm/action-setup@v4
+        with:
+          standalone: true
 
       - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm install
+        run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Lint
-        run: npm run lint --if-present
+        run: pnpm run lint --if-present
 
       - name: Test
-        run: npm test --if-present
+        run: pnpm test --if-present

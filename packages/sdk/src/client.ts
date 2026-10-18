@@ -174,7 +174,7 @@ export class Archipelag {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'User-Agent': '@archipelag/sdk/0.1.0',
+          'User-Agent': '@archipelag/sdk/0.2.0',
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,

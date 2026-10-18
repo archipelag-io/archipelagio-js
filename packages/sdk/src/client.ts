@@ -420,7 +420,8 @@ export class Archipelag {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
-          'Accept': payload.stream ? 'text/event-stream' : 'application/json',
+          // Servers that only accept JSON reject a bare text/event-stream
+          'Accept': payload.stream ? 'text/event-stream, application/json' : 'application/json',
         },
         body: JSON.stringify(payload),
         signal: controller.signal,

@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts --external react",
     "test": "vitest run --passWithNoTests",
-    "lint": "eslint src/",
+    "lint": "tsc --noEmit -p .",
     "clean": "rm -rf dist"
   },
   "keywords": [

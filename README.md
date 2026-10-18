@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@archipelag/sdk"><img src="https://img.shields.io/npm/v/@archipelag/sdk?color=blue" alt="npm"></a>
-  <a href="https://github.com/archipelag-io/archipelag-js/blob/main/LICENSE"><img src="https://img.shields.io/github/license/archipelag-io/archipelag-js" alt="License"></a>
+  <a href="https://github.com/archipelag-io/archipelagio-js/blob/main/LICENSE"><img src="https://img.shields.io/github/license/archipelag-io/archipelagio-js" alt="License"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue" alt="TypeScript"></a>
 </p>
 

@@ -30,6 +30,12 @@
   ],
   "author": "archipelag.io <hello@archipelag.io>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/archipelag-io/archipelagio-js.git",
+    "directory": "packages/react"
+  },
+  "homepage": "https://docs.archipelag.io/sdk/javascript",
   "peerDependencies": {
     "react": ">=18.0.0"
   },

@@ -1,0 +1,62 @@
+name: Publish
+
+# Pushing a tag like v0.2.0 publishes @archipelag/sdk and @archipelag/react
+# at that version to npm, with provenance.
+#
+# One-time setup: an npm automation token with publish rights on the
+# @archipelag scope, stored as the NPM_TOKEN repository secret.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from packageManager in package.json
+      - uses: pnpm/action-setup@v4
+        with:
+          standalone: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Check the tag matches the package versions
+        run: |
+          for pkg in packages/sdk packages/react; do
+            version=$(node -p "require('./$pkg/package.json').version")
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME does not match $pkg version $version"
+              exit 1
+            fi
+          done
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm test
+
+      # pnpm replaces workspace:* with the real version when publishing
+      - name: Publish
+        run: pnpm -r publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
